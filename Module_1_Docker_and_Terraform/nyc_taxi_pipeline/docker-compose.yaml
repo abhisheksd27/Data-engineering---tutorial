@@ -1,0 +1,64 @@
+version: '3.9'
+
+services:
+
+  # ── Container 1: PostgreSQL Database ──────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - de_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Container 2: pgAdmin (Database GUI) ───────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "8080:80"
+    volumes:
+      - ./pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - de_network
+
+  # ── Container 3: Ingestion script (runs once, then exits) ─────
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taxi_ingest
+    command: >
+      --user=${POSTGRES_USER}
+      --password=${POSTGRES_PASSWORD}
+      --host=postgres
+      --port=5432
+      --db=${POSTGRES_DB}
+      --table_name=green_taxi_trips
+      --url=${DATA_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - de_network
+
+networks:
+  de_network:
+    driver: bridge

@@ -1,0 +1,11 @@
+# Never commit secrets
+.env
+
+# Never commit downloaded data
+data/
+
+# Never commit auto-generated folders
+postgres_data/
+pgadmin_data/
+__pycache__/
+*.pyc
