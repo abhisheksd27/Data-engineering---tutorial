@@ -1,8 +1,4 @@
-version: '3.9'
-
 services:
-
-  # ── Container 1: PostgreSQL Database ──────────────────────────
   postgres:
     image: postgres:17-alpine
     container_name: postgres
@@ -22,7 +18,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Container 2: pgAdmin (Database GUI) ───────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin
@@ -39,7 +34,6 @@ services:
     networks:
       - de_network
 
-  # ── Container 3: Ingestion script (runs once, then exits) ─────
   ingest:
     build:
       context: .

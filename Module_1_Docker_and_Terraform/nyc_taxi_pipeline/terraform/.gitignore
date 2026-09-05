@@ -1,0 +1,16 @@
+# Terraform local state and history
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform configuration & lock
+.terraform/
+.terraform.lock.hcl
+
+# Variable definition files containing secrets
+*.tfvars
+*.tfvars.json
+
+# Local AWS credentials backup
+*.csv
+keys/

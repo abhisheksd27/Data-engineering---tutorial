@@ -131,6 +131,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake_lifecycle" {
     id     = "expire-old-files-after-30-days"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = 30
     }
