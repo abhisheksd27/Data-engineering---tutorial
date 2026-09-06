@@ -1,0 +1,56 @@
+id: hello_world
+namespace: tutorial
+
+description: |
+  Flow 01 - Hello World
+  Demonstrates: inputs, variables, outputs, triggers, pluginDefaults, concurrency.
+  This is the first Kestra flow to understand all basic concepts.
+
+labels:
+  module: "2"
+  stage: learning
+
+inputs:
+  - id: name
+    type: STRING
+    defaults: "Data Engineer"
+    description: "Your name - used in the greeting"
+
+variables:
+  welcome_message: "Hello, {{ inputs.name }}! Welcome to Kestra."
+
+tasks:
+  - id: log_start
+    type: io.kestra.plugin.core.log.Log
+    message: "Flow started. Greeting {{ inputs.name }}..."
+
+  - id: greet
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ vars.welcome_message }}"
+
+  - id: compute_length
+    type: io.kestra.plugin.core.debug.Return
+    format: "{{ inputs.name | length }}"
+
+  - id: sleep_briefly
+    type: io.kestra.plugin.core.flow.Sleep
+    duration: PT2S
+
+  - id: log_finish
+    type: io.kestra.plugin.core.log.Log
+    message: "Done! Name length was: {{ outputs.compute_length.value }} characters."
+
+triggers:
+  - id: daily_10am
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 10 * * *"
+    inputs:
+      name: "Scheduled Run"
+
+pluginDefaults:
+  - type: io.kestra.plugin.core.log.Log
+    values:
+      level: INFO
+
+concurrency:
+  limit: 2

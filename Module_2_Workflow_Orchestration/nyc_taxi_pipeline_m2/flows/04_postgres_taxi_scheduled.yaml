@@ -1,0 +1,131 @@
+id: postgres_taxi_scheduled
+namespace: tutorial
+
+description: |
+  Flow 04 - NYC Taxi → PostgreSQL (Scheduled + Parameterized)
+  Runs on the 1st of every month. Accepts any taxi color, year, and month.
+  Supports manual execution with custom inputs and backfilling.
+
+labels:
+  module: "2"
+  dataset: nyc_taxi
+
+inputs:
+  - id: taxi_color
+    type: STRING
+    defaults: green
+    description: "Taxi color: green or yellow"
+
+  - id: year
+    type: INT
+    defaults: 2025
+    description: "Year of data"
+
+  - id: month
+    type: INT
+    defaults: 11
+    description: "Month of data (1-12)"
+
+variables:
+  # Build the parquet URL dynamically from inputs
+  parquet_url: "https://d37ci6vzurychx.cloudfront.net/trip-data/{{ inputs.taxi_color }}_tripdata_{{ inputs.year }}-{{ '%02d' | format(inputs.month) }}.parquet"
+  table_name: "{{ inputs.taxi_color }}_taxi_trips"
+
+tasks:
+  - id: log_start
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Starting pipeline:
+      Color: {{ inputs.taxi_color }}
+      Period: {{ inputs.year }}-{{ '%02d' | format(inputs.month) }}
+      URL: {{ vars.parquet_url }}
+
+  - id: download_parquet
+    type: io.kestra.plugin.core.http.Download
+    uri: "{{ vars.parquet_url }}"
+    retry:
+      type: constant
+      interval: PT30S
+      maxAttempt: 3
+
+  - id: ingest_to_postgres
+    type: io.kestra.plugin.scripts.python.Script
+    beforeCommands:
+      - pip install pandas pyarrow sqlalchemy psycopg2-binary -q
+    inputFiles:
+      data.parquet: "{{ outputs.download_parquet.uri }}"
+    env:
+      TAXI_COLOR: "{{ inputs.taxi_color }}"
+      YEAR: "{{ inputs.year }}"
+      MONTH: "{{ inputs.month }}"
+      TABLE_NAME: "{{ vars.table_name }}"
+    script: |
+      import pandas as pd
+      from sqlalchemy import create_engine
+      import os
+      from kestra import Kestra
+
+      taxi_color = os.environ["TAXI_COLOR"]
+      year = os.environ["YEAR"]
+      month = os.environ["MONTH"]
+      table_name = os.environ["TABLE_NAME"]
+
+      # Read parquet
+      df = pd.read_parquet("data.parquet")
+      df.columns = df.columns.str.lower()
+
+      # Add partitioning columns
+      df['year'] = int(year)
+      df['month'] = int(month)
+
+      # Fix datetime columns based on taxi color
+      pickup_col = 'lpep_pickup_datetime' if taxi_color == 'green' else 'tpep_pickup_datetime'
+      dropoff_col = 'lpep_dropoff_datetime' if taxi_color == 'green' else 'tpep_dropoff_datetime'
+
+      if pickup_col in df.columns:
+          df[pickup_col] = pd.to_datetime(df[pickup_col])
+          df[dropoff_col] = pd.to_datetime(df[dropoff_col])
+
+      total = len(df)
+      print(f"Read {total} rows for {taxi_color} taxi {year}-{month:>02}")
+
+      # Connect to PostgreSQL
+      engine = create_engine("postgresql://root:root@postgres-taxi:5432/ny_taxi")
+
+      # First run of this month: replace; additional months: append
+      chunk_size = 10000
+      for i in range(0, total, chunk_size):
+          chunk = df.iloc[i:i+chunk_size]
+          chunk.to_sql(
+              table_name,
+              engine,
+              if_exists="replace" if i == 0 else "append",
+              index=False
+          )
+
+      print(f"Done: {total} rows → PostgreSQL table '{table_name}'")
+      Kestra.outputs({"row_count": total, "table_name": table_name})
+
+  - id: log_done
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ✅ Pipeline complete!
+      Table: {{ outputs.ingest_to_postgres.vars.table_name }}
+      Rows: {{ outputs.ingest_to_postgres.vars.row_count }}
+
+triggers:
+  - id: monthly_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 1 * *"   # 9am on the 1st of each month
+    inputs:
+      taxi_color: green
+      year: "{{ trigger.date | date('yyyy') | int }}"
+      month: "{{ trigger.date | date('M') | int }}"
+
+errors:
+  - id: on_failure
+    type: io.kestra.plugin.core.log.Log
+    message: "FAILED: {{ inputs.taxi_color }} {{ inputs.year }}-{{ inputs.month }} | Execution: {{ execution.id }}"
+
+concurrency:
+  limit: 1

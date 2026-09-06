@@ -1,0 +1,67 @@
+id: aws_s3_taxi_upload
+namespace: tutorial
+
+description: |
+  Flow 05 - NYC Taxi → AWS S3
+  Downloads Green Taxi parquet and uploads it to the S3 data lake.
+  Uses Kestra's native AWS S3 plugin (no manual boto3 needed).
+
+labels:
+  module: "2"
+  dataset: green_taxi
+  target: s3
+
+inputs:
+  - id: taxi_color
+    type: STRING
+    defaults: green
+
+  - id: year
+    type: INT
+    defaults: 2025
+
+  - id: month
+    type: INT
+    defaults: 11
+
+variables:
+  parquet_url: "https://d37ci6vzurychx.cloudfront.net/trip-data/{{ inputs.taxi_color }}_tripdata_{{ inputs.year }}-{{ '%02d' | format(inputs.month) }}.parquet"
+  s3_key: "raw/{{ inputs.taxi_color }}_tripdata_{{ inputs.year }}-{{ '%02d' | format(inputs.month) }}.parquet"
+  s3_bucket: ny-taxi-data-lake-abhishekshankar-826674
+
+tasks:
+  - id: log_start
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Downloading: {{ vars.parquet_url }}
+      Uploading to: s3://{{ vars.s3_bucket }}/{{ vars.s3_key }}
+
+  - id: download_parquet
+    type: io.kestra.plugin.core.http.Download
+    uri: "{{ vars.parquet_url }}"
+    retry:
+      type: constant
+      interval: PT30S
+      maxAttempt: 3
+
+  - id: upload_to_s3
+    type: io.kestra.plugin.aws.s3.Upload
+    accessKeyId: "{{ secret('AWS_ACCESS_KEY_ID') }}"
+    secretKeyId: "{{ secret('AWS_SECRET_ACCESS_KEY') }}"
+    region: us-east-1
+    bucket: "{{ vars.s3_bucket }}"
+    key: "{{ vars.s3_key }}"
+    from: "{{ outputs.download_parquet.uri }}"
+
+  - id: log_done
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ✅ Upload complete!
+      S3 URI: s3://{{ vars.s3_bucket }}/{{ vars.s3_key }}
+      Bucket: {{ outputs.upload_to_s3.bucket }}
+      Key: {{ outputs.upload_to_s3.key }}
+
+errors:
+  - id: on_failure
+    type: io.kestra.plugin.core.log.Log
+    message: "S3 upload FAILED for {{ inputs.taxi_color }} {{ inputs.year }}-{{ inputs.month }}"

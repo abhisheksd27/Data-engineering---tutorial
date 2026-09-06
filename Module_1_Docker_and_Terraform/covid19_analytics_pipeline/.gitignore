@@ -1,0 +1,24 @@
+# Local data downloads
+data/
+
+# Postgres & pgAdmin persistent volumes
+postgres_data/
+pgadmin_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment secrets — never commit real credentials
+.env
+
+# Terraform state & secrets
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfvars
+terraform/*.tfvars.json

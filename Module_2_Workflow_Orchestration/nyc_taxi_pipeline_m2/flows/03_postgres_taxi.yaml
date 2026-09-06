@@ -1,0 +1,86 @@
+id: postgres_taxi_etl
+namespace: tutorial
+
+description: |
+  Flow 03 - NYC Taxi → PostgreSQL (one-time run)
+  Downloads Green Taxi parquet for Nov 2025 and loads into PostgreSQL.
+  Demonstrates: HTTP Download → Python ingestion → PostgreSQL.
+
+labels:
+  module: "2"
+  dataset: green_taxi
+
+variables:
+  taxi_color: green
+  year: "2025"
+  month: "11"
+  parquet_url: "https://d37ci6vzurychx.cloudfront.net/trip-data/green_tripdata_2025-11.parquet"
+  postgres_host: postgres-taxi
+  postgres_port: "5432"
+  postgres_db: ny_taxi
+  postgres_user: root
+  postgres_password: root
+  table_name: green_taxi_trips
+
+tasks:
+  - id: log_start
+    type: io.kestra.plugin.core.log.Log
+    message: "Starting ETL: {{ vars.taxi_color }} taxi {{ vars.year }}-{{ vars.month }}"
+
+  - id: download_parquet
+    type: io.kestra.plugin.core.http.Download
+    uri: "{{ vars.parquet_url }}"
+
+  - id: ingest_to_postgres
+    type: io.kestra.plugin.scripts.python.Script
+    beforeCommands:
+      - pip install pandas pyarrow sqlalchemy psycopg2-binary -q
+    inputFiles:
+      data.parquet: "{{ outputs.download_parquet.uri }}"
+    script: |
+      import pandas as pd
+      from sqlalchemy import create_engine
+      from kestra import Kestra
+
+      # Read parquet
+      df = pd.read_parquet("data.parquet")
+
+      # Standardize column names
+      df.columns = df.columns.str.lower()
+
+      # Fix datetime columns
+      if 'lpep_pickup_datetime' in df.columns:
+          df['lpep_pickup_datetime'] = pd.to_datetime(df['lpep_pickup_datetime'])
+          df['lpep_dropoff_datetime'] = pd.to_datetime(df['lpep_dropoff_datetime'])
+
+      print(f"Loaded parquet: {len(df)} rows, {len(df.columns)} columns")
+
+      # Connect to PostgreSQL
+      engine = create_engine(
+          "postgresql://root:root@postgres-taxi:5432/ny_taxi"
+      )
+
+      # Write in chunks
+      chunk_size = 10000
+      total = len(df)
+      for i in range(0, total, chunk_size):
+          chunk = df.iloc[i:i+chunk_size]
+          chunk.to_sql(
+              "green_taxi_trips",
+              engine,
+              if_exists="replace" if i == 0 else "append",
+              index=False
+          )
+          print(f"Inserted rows {i} to {min(i+chunk_size, total)}")
+
+      print(f"Done! Total rows inserted: {total}")
+      Kestra.outputs({"row_count": total})
+
+  - id: log_done
+    type: io.kestra.plugin.core.log.Log
+    message: "ETL complete! {{ outputs.ingest_to_postgres.vars.row_count }} rows loaded into {{ vars.table_name }}"
+
+errors:
+  - id: alert_failure
+    type: io.kestra.plugin.core.log.Log
+    message: "PIPELINE FAILED! Execution ID: {{ execution.id }} | Check logs above."

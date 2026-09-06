@@ -1,0 +1,161 @@
+id: full_taxi_pipeline_scheduled
+namespace: tutorial
+
+description: |
+  Flow 06 - Full NYC Taxi Pipeline (Scheduled)
+  The complete, production-ready orchestrated pipeline:
+    1. Download parquet from NYC TLC
+    2. Upload raw parquet to AWS S3 data lake
+    3. Load into PostgreSQL for analysis
+    4. Log summary with S3 URI and row count
+  Runs automatically on the 5th of each month.
+  Supports backfilling for historical months.
+
+labels:
+  module: "2"
+  type: full_pipeline
+
+inputs:
+  - id: taxi_color
+    type: STRING
+    defaults: green
+    description: "green or yellow"
+
+  - id: year
+    type: INT
+    defaults: 2025
+
+  - id: month
+    type: INT
+    defaults: 11
+
+variables:
+  parquet_url: "https://d37ci6vzurychx.cloudfront.net/trip-data/{{ inputs.taxi_color }}_tripdata_{{ inputs.year }}-{{ '%02d' | format(inputs.month) }}.parquet"
+  s3_key: "raw/{{ inputs.taxi_color }}_tripdata_{{ inputs.year }}-{{ '%02d' | format(inputs.month) }}.parquet"
+  s3_bucket: ny-taxi-data-lake-abhishekshankar-826674
+  table_name: "{{ inputs.taxi_color }}_taxi_trips"
+
+pluginDefaults:
+  - type: io.kestra.plugin.aws
+    values:
+      accessKeyId: "{{ secret('AWS_ACCESS_KEY_ID') }}"
+      secretKeyId: "{{ secret('AWS_SECRET_ACCESS_KEY') }}"
+      region: us-east-1
+
+tasks:
+  # ─── TASK 1: Log pipeline start ───────────────────────────────────────
+  - id: log_start
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      🚀 Pipeline started
+      Taxi: {{ inputs.taxi_color }} | Period: {{ inputs.year }}-{{ '%02d' | format(inputs.month) }}
+      Source: {{ vars.parquet_url }}
+      Target S3: s3://{{ vars.s3_bucket }}/{{ vars.s3_key }}
+
+  # ─── TASK 2: Download raw parquet ─────────────────────────────────────
+  - id: download_parquet
+    type: io.kestra.plugin.core.http.Download
+    uri: "{{ vars.parquet_url }}"
+    retry:
+      type: constant
+      interval: PT30S
+      maxAttempt: 3
+
+  # ─── TASK 3: Upload raw parquet to S3 (data lake - bronze layer) ───────
+  - id: upload_to_s3
+    type: io.kestra.plugin.aws.s3.Upload
+    bucket: "{{ vars.s3_bucket }}"
+    key: "{{ vars.s3_key }}"
+    from: "{{ outputs.download_parquet.uri }}"
+
+  # ─── TASK 4: Load parquet into PostgreSQL ─────────────────────────────
+  - id: ingest_to_postgres
+    type: io.kestra.plugin.scripts.python.Script
+    beforeCommands:
+      - pip install pandas pyarrow sqlalchemy psycopg2-binary -q
+    inputFiles:
+      data.parquet: "{{ outputs.download_parquet.uri }}"
+    env:
+      TAXI_COLOR: "{{ inputs.taxi_color }}"
+      YEAR: "{{ inputs.year }}"
+      MONTH: "{{ inputs.month }}"
+      TABLE_NAME: "{{ vars.table_name }}"
+    script: |
+      import pandas as pd
+      from sqlalchemy import create_engine
+      import os
+      from kestra import Kestra
+
+      taxi_color = os.environ["TAXI_COLOR"]
+      year = int(os.environ["YEAR"])
+      month = int(os.environ["MONTH"])
+      table_name = os.environ["TABLE_NAME"]
+
+      # Read parquet
+      df = pd.read_parquet("data.parquet")
+      df.columns = df.columns.str.lower()
+
+      # Add partition columns
+      df['year'] = year
+      df['month'] = month
+
+      # Normalize datetime columns
+      pickup_col = 'lpep_pickup_datetime' if taxi_color == 'green' else 'tpep_pickup_datetime'
+      dropoff_col = 'lpep_dropoff_datetime' if taxi_color == 'green' else 'tpep_dropoff_datetime'
+      if pickup_col in df.columns:
+          df[pickup_col] = pd.to_datetime(df[pickup_col])
+          df[dropoff_col] = pd.to_datetime(df[dropoff_col])
+
+      total = len(df)
+      print(f"📥 Read {total} rows for {taxi_color} taxi {year}-{month:02d}")
+
+      # Write to PostgreSQL
+      engine = create_engine("postgresql://root:root@postgres-taxi:5432/ny_taxi")
+      chunk_size = 10000
+      for i in range(0, total, chunk_size):
+          chunk = df.iloc[i:i+chunk_size]
+          chunk.to_sql(
+              table_name,
+              engine,
+              if_exists="replace" if i == 0 else "append",
+              index=False
+          )
+          print(f"  Inserted chunk {i//chunk_size + 1}: rows {i}–{min(i+chunk_size, total)}")
+
+      print(f"✅ PostgreSQL load complete: {total} rows → '{table_name}'")
+      Kestra.outputs({"row_count": total, "table": table_name})
+
+  # ─── TASK 5: Final log summary ────────────────────────────────────────
+  - id: log_summary
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ✅ Pipeline COMPLETE!
+      ─────────────────────────────
+      Taxi:      {{ inputs.taxi_color }}
+      Period:    {{ inputs.year }}-{{ '%02d' | format(inputs.month) }}
+      S3 URI:    s3://{{ vars.s3_bucket }}/{{ vars.s3_key }}
+      PG Table:  {{ outputs.ingest_to_postgres.vars.table }}
+      Rows:      {{ outputs.ingest_to_postgres.vars.row_count }}
+      ─────────────────────────────
+
+errors:
+  - id: on_failure
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ❌ PIPELINE FAILED!
+      Flow: {{ flow.id }}
+      Execution: {{ execution.id }}
+      Taxi: {{ inputs.taxi_color }} {{ inputs.year }}-{{ inputs.month }}
+      Check Kestra UI → Executions → {{ execution.id }} for details.
+
+triggers:
+  - id: green_monthly
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 5 * *"   # 9am on 5th of each month
+    inputs:
+      taxi_color: green
+      year: "{{ trigger.date | date('yyyy') | int }}"
+      month: "{{ trigger.date | date('M') | int }}"
+
+concurrency:
+  limit: 1

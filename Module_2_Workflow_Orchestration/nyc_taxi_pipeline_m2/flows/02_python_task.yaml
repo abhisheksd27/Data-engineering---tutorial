@@ -1,0 +1,53 @@
+id: python_task_demo
+namespace: tutorial
+
+description: |
+  Flow 02 - Run Python inside Kestra
+  Downloads Green Taxi parquet, passes it to a Python script,
+  returns row count and basic stats as Kestra outputs.
+
+labels:
+  module: "2"
+  stage: learning
+
+tasks:
+  - id: download_parquet
+    type: io.kestra.plugin.core.http.Download
+    uri: "https://d37ci6vzurychx.cloudfront.net/trip-data/green_tripdata_2025-11.parquet"
+
+  - id: analyze_with_python
+    type: io.kestra.plugin.scripts.python.Script
+    beforeCommands:
+      - pip install pandas pyarrow -q
+    inputFiles:
+      data.parquet: "{{ outputs.download_parquet.uri }}"
+    outputFiles:
+      - "summary.txt"
+    script: |
+      import pandas as pd
+
+      df = pd.read_parquet("data.parquet")
+      row_count = len(df)
+      avg_fare = round(df['total_amount'].mean(), 2)
+      avg_distance = round(df['trip_distance'].mean(), 2)
+
+      print(f"Rows: {row_count}")
+      print(f"Avg fare: ${avg_fare}")
+      print(f"Avg trip distance: {avg_distance} miles")
+
+      # Write summary to a file (becomes a Kestra output)
+      with open("summary.txt", "w") as f:
+          f.write(f"row_count={row_count}\n")
+          f.write(f"avg_fare={avg_fare}\n")
+          f.write(f"avg_distance={avg_distance}\n")
+
+      # Kestra can capture outputs from Python via print to JSON
+      from kestra import Kestra
+      Kestra.outputs({"row_count": row_count, "avg_fare": avg_fare})
+
+  - id: log_results
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Python analysis complete.
+      Row count: {{ outputs.analyze_with_python.vars.row_count }}
+      Avg fare: ${{ outputs.analyze_with_python.vars.avg_fare }}

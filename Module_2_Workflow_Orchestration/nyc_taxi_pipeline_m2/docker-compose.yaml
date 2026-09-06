@@ -1,0 +1,104 @@
+services:
+  # Kestra orchestration engine
+  kestra:
+    image: kestra/kestra:latest
+    pull_policy: always
+    entrypoint: /bin/bash
+    command: >
+      -c 'export KESTRA_CONFIGURATION="
+      datasources:
+        postgres:
+          url: jdbc:postgresql://postgres-kestra:5432/${KESTRA_DB_NAME}
+          driverClassName: org.postgresql.Driver
+          username: ${KESTRA_DB_USER}
+          password: ${KESTRA_DB_PASSWORD}
+      kestra:
+        server:
+          basicAuth:
+            enabled: false
+        repository:
+          type: postgres
+        storage:
+          type: local
+          local:
+            basePath: /app/storage
+        queue:
+          type: postgres
+        tasks:
+          tmpDir:
+            path: /tmp/kestra-tmp
+      " && ./kestra server standalone --worker-thread=128'
+    environment:
+      KESTRA_DB_USER: ${KESTRA_DB_USER}
+      KESTRA_DB_PASSWORD: ${KESTRA_DB_PASSWORD}
+      KESTRA_DB_NAME: ${KESTRA_DB_NAME}
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-tmp:/tmp/kestra-tmp
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      postgres-kestra:
+        condition: service_healthy
+    networks:
+      - kestra-net
+
+  # PostgreSQL for Kestra internal metadata
+  postgres-kestra:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${KESTRA_DB_USER}
+      POSTGRES_PASSWORD: ${KESTRA_DB_PASSWORD}
+      POSTGRES_DB: ${KESTRA_DB_NAME}
+    volumes:
+      - postgres-kestra-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KESTRA_DB_USER} -d ${KESTRA_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kestra-net
+
+  # PostgreSQL for NYC Taxi data (same as Module 1)
+  postgres-taxi:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-taxi-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kestra-net
+
+  # pgAdmin (optional - to visually browse PostgreSQL)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: root
+    ports:
+      - "8090:80"
+    depends_on:
+      - postgres-taxi
+    networks:
+      - kestra-net
+
+volumes:
+  kestra-data:
+  postgres-kestra-data:
+  postgres-taxi-data:
+
+networks:
+  kestra-net:
+    driver: bridge
